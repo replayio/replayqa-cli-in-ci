@@ -24,7 +24,6 @@ jobs:
       NEXT_TELEMETRY_DISABLED: "1"
       REPLAYQA_CLI_VERSION: "0.2.2"
       REPLAYQA_PROXY_TIMEOUT_MS: "300000"
-      REPLAYQA_PROXY_LOG: ${{ runner.temp }}/replayqa-proxy.jsonl
       REPLAY_QA_PROJECT_ID: ${{ secrets.REPLAY_QA_PROJECT_ID }}
       REPLAY_QA_API_KEY: ${{ secrets.REPLAY_QA_API_KEY }}
 
@@ -69,6 +68,8 @@ jobs:
           echo "Demo app is serving on http://127.0.0.1:3000"
 
       - name: Connect the local app through Replay QA and start a test run
+        env:
+          REPLAYQA_PROXY_LOG: ${{ runner.temp }}/replayqa-proxy.jsonl
         run: npm run qa:ci
 
       - name: Upload Replay QA and app logs
