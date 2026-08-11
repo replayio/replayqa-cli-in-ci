@@ -1,0 +1,9 @@
+{
+  "qa-project-id": "proj_your_project_id",
+  "target-url": "http://127.0.0.1:3000",
+  "app-command": "npm run dev",
+  "proxy": {
+    "allow": ["127.0.0.1"],
+    "local-port": 8888
+  }
+}

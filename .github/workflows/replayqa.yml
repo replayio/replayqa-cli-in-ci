@@ -1,0 +1,78 @@
+name: Replay QA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: replayqa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  replayqa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+      REPLAYQA_CLI_VERSION: "0.2.2"
+      REPLAYQA_PROXY_TIMEOUT_MS: "300000"
+      REPLAYQA_PROXY_LOG: ${{ runner.temp }}/replayqa-proxy.jsonl
+      REPLAY_QA_PROJECT_ID: ${{ secrets.REPLAY_QA_PROJECT_ID }}
+      REPLAY_QA_API_KEY: ${{ secrets.REPLAY_QA_API_KEY }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install app dependencies
+        run: npm ci
+
+      - name: Install Replay QA CLI
+        run: npx --yes replayqa@${REPLAYQA_CLI_VERSION} --version
+
+      - name: Check and build the demo app
+        run: npm run check
+
+      - name: Start the demo app
+        run: |
+          nohup npm run start -- --hostname 127.0.0.1 --port 3000 >"${RUNNER_TEMP}/reminders-next.log" 2>&1 &
+          echo $! >"${RUNNER_TEMP}/reminders-next.pid"
+
+          ready=false
+          for attempt in {1..60}; do
+            if curl --fail --silent http://127.0.0.1:3000 >/dev/null; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "$ready" != true ]; then
+            cat "${RUNNER_TEMP}/reminders-next.log"
+            exit 1
+          fi
+
+          echo "Demo app is serving on http://127.0.0.1:3000"
+
+      - name: Connect the local app through Replay QA and start a test run
+        run: npm run qa:ci
+
+      - name: Upload Replay QA and app logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: replayqa-ci-logs
+          if-no-files-found: ignore
+          path: |
+            ${{ runner.temp }}/replayqa-proxy.jsonl
+            ${{ runner.temp }}/reminders-next.log

@@ -11,6 +11,10 @@
 # testing
 /coverage
 
+# local Replay QA project configuration
+/.replay/config.json
+/.replay/qa-bugs/
+
 # next.js
 /.next/
 /out/
