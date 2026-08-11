@@ -1,38 +1,47 @@
-name: Deploy production · Replay QA
+name: Replay QA · Production
 
+# Vercel's Git integration owns deploying this repo. Rather than deploying a
+# second time from CI, this workflow waits for Vercel to report a successful
+# production deployment and then runs Replay QA against the URL Vercel
+# published. Vercel's build is the gate: if it fails, no successful
+# deployment_status arrives and Replay QA correctly never runs.
 on:
-  push:
-    branches: [main]
-  workflow_dispatch:
+  deployment_status:
 
 permissions:
   contents: read
 
 concurrency:
-  group: production-${{ github.ref }}
+  group: replayqa-production
   cancel-in-progress: false
 
 jobs:
-  deploy-and-test:
+  qa:
+    # deployment_status fires for pending/in_progress/failure too, and for
+    # preview deployments. Only a successful Vercel production deploy qualifies.
+    if: >-
+      ${{ github.event.deployment_status.state == 'success'
+          && github.event.deployment.environment == 'Production'
+          && github.event.deployment_status.environment_url != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
       NEXT_TELEMETRY_DISABLED: "1"
       REPLAYQA_CLI_VERSION: "0.2.2"
-      VERCEL_CLI_VERSION: "latest"
-      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       REPLAY_QA_API_KEY: ${{ secrets.REPLAY_QA_API_KEY }}
       REPLAY_QA_PRODUCTION_PROJECT_ID: ${{ secrets.REPLAY_QA_PRODUCTION_PROJECT_ID }}
-      REPLAY_QA_PRODUCTION_URL: ${{ secrets.REPLAY_QA_PRODUCTION_URL }}
+      # Supplied by Vercel with the deployment event, so it always points at the
+      # deployment that just went live instead of a hardcoded URL.
+      REPLAY_QA_PRODUCTION_URL: ${{ github.event.deployment_status.environment_url }}
 
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
+      - name: Check out the deployed commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.deployment.sha }}
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -43,73 +52,46 @@ jobs:
       - name: Install Replay QA CLI
         run: npx --yes replayqa@${REPLAYQA_CLI_VERSION} --version
 
-      - name: Check and build the production candidate
-        run: npm run check
-
-      - name: Link the Vercel project
-        run: >-
-          npx --yes vercel@${VERCEL_CLI_VERSION} link --yes
-          --project "$VERCEL_PROJECT_ID"
-          --scope "$VERCEL_ORG_ID"
-          --token "$VERCEL_TOKEN"
-
-      - name: Pull Vercel production settings
-        run: >-
-          npx --yes vercel@${VERCEL_CLI_VERSION} pull --yes
-          --environment=production
-          --project "$VERCEL_PROJECT_ID"
-          --scope "$VERCEL_ORG_ID"
-          --token "$VERCEL_TOKEN"
-
-      - name: Build the Vercel production output
-        run: >-
-          npx --yes vercel@${VERCEL_CLI_VERSION} build --prod
-          --project "$VERCEL_PROJECT_ID"
-          --scope "$VERCEL_ORG_ID"
-          --token "$VERCEL_TOKEN"
-
-      - name: Deploy the Vercel production output
+      - name: Wait for the deployment to serve traffic
         run: |
-          set -o pipefail
-          npx --yes vercel@${VERCEL_CLI_VERSION} deploy --prebuilt --prod --yes \
-            --project "$VERCEL_PROJECT_ID" \
-            --scope "$VERCEL_ORG_ID" \
-            --token "$VERCEL_TOKEN" 2>&1 | tee "${RUNNER_TEMP}/vercel-deploy.log"
+          echo "Deployment URL: $REPLAY_QA_PRODUCTION_URL"
+          echo "Deployed commit: ${{ github.event.deployment.sha }}"
 
-      - name: Wait for the production URL
-        run: |
-          if [ -z "$REPLAY_QA_PRODUCTION_URL" ]; then
-            echo "REPLAY_QA_PRODUCTION_URL is required."
-            exit 1
-          fi
-
-          ready=false
+          status=000
           for attempt in {1..60}; do
-            if curl --fail --silent --show-error --location "$REPLAY_QA_PRODUCTION_URL" >/dev/null; then
-              ready=true
-              break
-            fi
+            status=$(curl --silent --location --output /dev/null \
+              --write-out '%{http_code}' --max-time 10 \
+              "$REPLAY_QA_PRODUCTION_URL" || echo 000)
+
+            case "$status" in
+              2??|3??)
+                echo "Deployment is serving (HTTP $status)."
+                exit 0
+                ;;
+              401|403)
+                echo "The deployment returned HTTP $status."
+                echo "Vercel Deployment Protection is most likely enabled, which"
+                echo "blocks Replay QA from reaching the app. Disable it for this"
+                echo "project, or add a protection bypass token."
+                exit 1
+                ;;
+            esac
+
             sleep 2
           done
 
-          if [ "$ready" != true ]; then
-            echo "Production URL did not become reachable: $REPLAY_QA_PRODUCTION_URL"
-            exit 1
-          fi
+          echo "Deployment never became reachable (last status: $status)."
+          exit 1
 
-          echo "Production app is serving at $REPLAY_QA_PRODUCTION_URL"
-
-      - name: Run Replay QA against production
+      - name: Run Replay QA against the deployment
         run: |
           set -o pipefail
           npm run qa:production 2>&1 | tee "${RUNNER_TEMP}/replayqa-production.log"
 
-      - name: Upload production deployment and Replay QA logs
+      - name: Upload Replay QA logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-replayqa-logs
           if-no-files-found: ignore
-          path: |
-            ${{ runner.temp }}/vercel-deploy.log
-            ${{ runner.temp }}/replayqa-production.log
+          path: ${{ runner.temp }}/replayqa-production.log
