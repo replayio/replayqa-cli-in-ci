@@ -1,0 +1,115 @@
+name: Deploy production · Replay QA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+      REPLAYQA_CLI_VERSION: "0.2.2"
+      VERCEL_CLI_VERSION: "latest"
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      REPLAY_QA_API_KEY: ${{ secrets.REPLAY_QA_API_KEY }}
+      REPLAY_QA_PRODUCTION_PROJECT_ID: ${{ secrets.REPLAY_QA_PRODUCTION_PROJECT_ID }}
+      REPLAY_QA_PRODUCTION_URL: ${{ secrets.REPLAY_QA_PRODUCTION_URL }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install app dependencies
+        run: npm ci
+
+      - name: Install Replay QA CLI
+        run: npx --yes replayqa@${REPLAYQA_CLI_VERSION} --version
+
+      - name: Check and build the production candidate
+        run: npm run check
+
+      - name: Link the Vercel project
+        run: >-
+          npx --yes vercel@${VERCEL_CLI_VERSION} link --yes
+          --project "$VERCEL_PROJECT_ID"
+          --scope "$VERCEL_ORG_ID"
+          --token "$VERCEL_TOKEN"
+
+      - name: Pull Vercel production settings
+        run: >-
+          npx --yes vercel@${VERCEL_CLI_VERSION} pull --yes
+          --environment=production
+          --project "$VERCEL_PROJECT_ID"
+          --scope "$VERCEL_ORG_ID"
+          --token "$VERCEL_TOKEN"
+
+      - name: Build the Vercel production output
+        run: >-
+          npx --yes vercel@${VERCEL_CLI_VERSION} build --prod
+          --project "$VERCEL_PROJECT_ID"
+          --scope "$VERCEL_ORG_ID"
+          --token "$VERCEL_TOKEN"
+
+      - name: Deploy the Vercel production output
+        run: |
+          set -o pipefail
+          npx --yes vercel@${VERCEL_CLI_VERSION} deploy --prebuilt --prod --yes \
+            --project "$VERCEL_PROJECT_ID" \
+            --scope "$VERCEL_ORG_ID" \
+            --token "$VERCEL_TOKEN" 2>&1 | tee "${RUNNER_TEMP}/vercel-deploy.log"
+
+      - name: Wait for the production URL
+        run: |
+          if [ -z "$REPLAY_QA_PRODUCTION_URL" ]; then
+            echo "REPLAY_QA_PRODUCTION_URL is required."
+            exit 1
+          fi
+
+          ready=false
+          for attempt in {1..60}; do
+            if curl --fail --silent --show-error --location "$REPLAY_QA_PRODUCTION_URL" >/dev/null; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "$ready" != true ]; then
+            echo "Production URL did not become reachable: $REPLAY_QA_PRODUCTION_URL"
+            exit 1
+          fi
+
+          echo "Production app is serving at $REPLAY_QA_PRODUCTION_URL"
+
+      - name: Run Replay QA against production
+        run: |
+          set -o pipefail
+          npm run qa:production 2>&1 | tee "${RUNNER_TEMP}/replayqa-production.log"
+
+      - name: Upload production deployment and Replay QA logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-replayqa-logs
+          if-no-files-found: ignore
+          path: |
+            ${{ runner.temp }}/vercel-deploy.log
+            ${{ runner.temp }}/replayqa-production.log

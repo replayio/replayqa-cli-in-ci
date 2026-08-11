@@ -11,7 +11,8 @@
     "format": "prettier --write \"**/*.{ts,tsx}\"",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm run lint && npm run build",
-    "qa:ci": "node scripts/run-replayqa-ci.mjs"
+    "qa:ci": "node scripts/run-replayqa-ci.mjs",
+    "qa:production": "node scripts/run-replayqa-production.mjs"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",
