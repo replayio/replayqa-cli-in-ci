@@ -95,15 +95,18 @@ async function waitForExploration(explorationId) {
   const activeStatuses = new Set(["pending", "queued", "starting", "running", "in-progress"])
   const deadline = Date.now() + explorationTimeoutMs
   let lastStatus
+  let lastHeartbeatAt = 0
 
   while (true) {
     const result = await runCli(["exploration", explorationId])
     const exploration = parseJson(result.stdout, "exploration")
     const status = typeof exploration.status === "string" ? exploration.status : "unknown"
+    const now = Date.now()
 
-    if (status !== lastStatus) {
-      console.log(`Replay QA exploration ${explorationId} status: ${status}`)
+    if (status !== lastStatus || now - lastHeartbeatAt >= 60_000) {
+      console.log(`Replay QA exploration ${explorationId} status: ${status}; tunnel remains active.`)
       lastStatus = status
+      lastHeartbeatAt = now
     }
 
     if (!activeStatuses.has(status)) {

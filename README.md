@@ -59,7 +59,8 @@ REPLAY_QA_API_KEY=lqa_... npx --yes replayqa@0.2.2 run http://127.0.0.1:3000 \
 The CI orchestration lives in [`scripts/run-replayqa-ci.mjs`](scripts/run-replayqa-ci.mjs). It waits
 for the proxy's JSON `heartbeat` event with `ready: true` before calling `replayqa start-exploration`,
 polls `replayqa exploration <id>` until completion, and then prints the latest five test runs for the
-project. The workflow bounds that wait with `REPLAYQA_EXPLORATION_TIMEOUT_MS`.
+project. The PR job allows up to one hour for the exploration and emits periodic status lines while
+the tunnel remains active, so long-running journey batches do not look idle to the runner.
 
 ## Production deployment and QA
 
