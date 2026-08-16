@@ -8,6 +8,7 @@ required("REPLAY_QA_API_KEY")
 const cliVersion = process.env.REPLAYQA_CLI_VERSION ?? "0.2.2"
 const qaUrl = process.env.REPLAY_QA_URL ?? "https://qa.replay.io"
 const proxyPort = process.env.REPLAYQA_PROXY_PORT ?? "18888"
+const explorationTimeoutMs = Number(process.env.REPLAYQA_EXPLORATION_TIMEOUT_MS ?? 900_000)
 const prompt =
   process.env.REPLAYQA_PROMPT ??
   "Exercise the Reminders app: create a reminder, mark it complete, search for a reminder, switch lists, and verify the main navigation and empty states."
@@ -59,15 +60,21 @@ try {
   await waitForProxyReady()
   console.log(`Replay QA reverse proxy is ready for ${projectId}.`)
 
-  const exploration = await runCli([
+  const explorationResult = await runCli([
     "start-exploration",
     "--project",
     projectId,
     "--prompt",
     prompt,
   ])
+  const exploration = parseJson(explorationResult.stdout, "start-exploration")
+  if (typeof exploration.id !== "string" || exploration.id.length === 0) {
+    throw new Error("Replay QA start-exploration did not return an exploration id.")
+  }
   console.log("Replay QA exploration/test run request accepted:")
-  console.log(exploration.stdout.trim())
+  console.log(explorationResult.stdout.trim())
+
+  await waitForExploration(exploration.id)
 
   const latestRuns = await runCli(["test-runs", "--project", projectId, "--page-size", "5"])
   console.log("Latest Replay QA test runs:")
@@ -82,6 +89,38 @@ try {
 } finally {
   await stopProcess(proxy)
   await new Promise((resolve) => proxyLog.end(resolve))
+}
+
+async function waitForExploration(explorationId) {
+  const activeStatuses = new Set(["pending", "queued", "starting", "running", "in-progress"])
+  const deadline = Date.now() + explorationTimeoutMs
+  let lastStatus
+
+  while (true) {
+    const result = await runCli(["exploration", explorationId])
+    const exploration = parseJson(result.stdout, "exploration")
+    const status = typeof exploration.status === "string" ? exploration.status : "unknown"
+
+    if (status !== lastStatus) {
+      console.log(`Replay QA exploration ${explorationId} status: ${status}`)
+      lastStatus = status
+    }
+
+    if (!activeStatuses.has(status)) {
+      if (status !== "completed") {
+        throw new Error(`Replay QA exploration ${explorationId} ended with status: ${status}.`)
+      }
+      return exploration
+    }
+
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `Timed out after ${explorationTimeoutMs}ms waiting for Replay QA exploration ${explorationId} to finish.`
+      )
+    }
+
+    await delay(15_000)
+  }
 }
 
 async function waitForProxyReady() {
@@ -145,6 +184,16 @@ function runCli(args) {
       }
     })
   })
+}
+
+function parseJson(stdout, command) {
+  try {
+    return JSON.parse(stdout)
+  } catch (error) {
+    throw new Error(
+      `replayqa ${command} returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`
+    )
+  }
 }
 
 async function stopProcess(child) {
