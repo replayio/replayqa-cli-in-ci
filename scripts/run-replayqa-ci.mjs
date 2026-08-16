@@ -7,6 +7,7 @@ required("REPLAY_QA_API_KEY")
 
 const cliVersion = process.env.REPLAYQA_CLI_VERSION ?? "0.2.2"
 const qaUrl = process.env.REPLAY_QA_URL ?? "https://qa.replay.io"
+const proxyPort = process.env.REPLAYQA_PROXY_PORT ?? "18888"
 const prompt =
   process.env.REPLAYQA_PROMPT ??
   "Exercise the Reminders app: create a reminder, mark it complete, search for a reminder, switch lists, and verify the main navigation and empty states."
@@ -27,7 +28,18 @@ const proxyReadyPromise = new Promise((resolve, reject) => {
 
 const proxy = spawn(
   "npx",
-  ["--yes", `replayqa@${cliVersion}`, "proxy", "--project", projectId, "--qa-url", qaUrl, "--json"],
+  [
+    "--yes",
+    `replayqa@${cliVersion}`,
+    "proxy",
+    "--project",
+    projectId,
+    "--qa-url",
+    qaUrl,
+    "--local-port",
+    proxyPort,
+    "--json",
+  ],
   {
     env: process.env,
     stdio: ["ignore", "pipe", "pipe"],
