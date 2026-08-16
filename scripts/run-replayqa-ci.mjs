@@ -10,7 +10,7 @@ const githubHeadSha = required("REPLAYQA_GITHUB_HEAD_SHA")
 const githubHeadRef = required("REPLAYQA_GITHUB_HEAD_REF")
 const githubWorkflowRunId = required("REPLAYQA_GITHUB_RUN_ID")
 
-const cliVersion = process.env.REPLAYQA_CLI_VERSION ?? "0.2.3"
+const cliVersion = process.env.REPLAYQA_CLI_VERSION ?? "0.2.4"
 const qaUrl = process.env.REPLAY_QA_URL ?? "https://qa.replay.io"
 const cliEnv = { ...process.env, REPLAY_QA_URL: qaUrl }
 const proxyPort = process.env.REPLAYQA_PROXY_PORT ?? "18888"
@@ -49,6 +49,7 @@ const proxy = spawn(
     qaUrl,
     "--local-port",
     proxyPort,
+    "--ci",
     "--json",
   ],
   {
