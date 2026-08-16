@@ -4,21 +4,32 @@ import { setTimeout as delay } from "node:timers/promises"
 
 const projectId = required("REPLAY_QA_PROJECT_ID")
 required("REPLAY_QA_API_KEY")
+const githubRepository = required("REPLAYQA_GITHUB_REPOSITORY")
+const githubPrNumber = required("REPLAYQA_GITHUB_PR_NUMBER")
+const githubHeadSha = required("REPLAYQA_GITHUB_HEAD_SHA")
+const githubHeadRef = required("REPLAYQA_GITHUB_HEAD_REF")
+const githubWorkflowRunId = required("REPLAYQA_GITHUB_RUN_ID")
 
 const cliVersion = process.env.REPLAYQA_CLI_VERSION ?? "0.2.2"
 const qaUrl = process.env.REPLAY_QA_URL ?? "https://qa.replay.io"
+const cliEnv = { ...process.env, REPLAY_QA_URL: qaUrl }
 const proxyPort = process.env.REPLAYQA_PROXY_PORT ?? "18888"
 const explorationTimeoutMs = Number(process.env.REPLAYQA_EXPLORATION_TIMEOUT_MS ?? 900_000)
-const prompt =
+const runMarker = process.env.REPLAYQA_RUN_MARKER?.trim()
+const basePrompt =
   process.env.REPLAYQA_PROMPT ??
   "Exercise the Reminders app: create a reminder, mark it complete, search for a reminder, switch lists, and verify the main navigation and empty states."
+const prompt = runMarker ? `${basePrompt}\n\nReplay QA CI marker: ${runMarker}` : basePrompt
 const proxyTimeoutMs = Number(process.env.REPLAYQA_PROXY_TIMEOUT_MS ?? 300_000)
 const proxyLogPath = process.env.REPLAYQA_PROXY_LOG ?? "/tmp/replayqa-proxy.jsonl"
+const activeExplorationStatuses = new Set(["pending", "queued", "starting", "running", "in-progress"])
 
 const proxyLog = createWriteStream(proxyLogPath, { flags: "a" })
 const proxyOutput = []
 let proxyBuffer = ""
 let proxyReady = false
+let terminationRequested = false
+let signalCleanupPromise
 let resolveProxyReady
 let rejectProxyReady
 
@@ -42,7 +53,7 @@ const proxy = spawn(
     "--json",
   ],
   {
-    env: process.env,
+    env: cliEnv,
     stdio: ["ignore", "pipe", "pipe"],
   }
 )
@@ -50,6 +61,14 @@ const proxy = spawn(
 proxy.stdout.on("data", (chunk) => handleProxyOutput("stdout", chunk))
 proxy.stderr.on("data", (chunk) => handleProxyOutput("stderr", chunk))
 proxy.once("error", (error) => rejectProxyReady(error))
+process.once("SIGINT", () => {
+  terminationRequested = true
+  void cleanUpActiveCiRun()
+})
+process.once("SIGTERM", () => {
+  terminationRequested = true
+  void cleanUpActiveCiRun()
+})
 proxy.once("exit", (code, signal) => {
   if (!proxyReady) {
     rejectProxyReady(new Error(`Replay QA proxy exited before readiness (code=${code ?? "none"}, signal=${signal ?? "none"}).`))
@@ -58,19 +77,31 @@ proxy.once("exit", (code, signal) => {
 
 try {
   await waitForProxyReady()
+  if (terminationRequested) throw new Error("Replay QA CI run was terminated before it started.")
   console.log(`Replay QA reverse proxy is ready for ${projectId}.`)
 
   const explorationResult = await runCli([
-    "start-exploration",
+    "ci",
     "--project",
     projectId,
+    "--repository",
+    githubRepository,
+    "--pr-number",
+    githubPrNumber,
+    "--head-sha",
+    githubHeadSha,
+    "--branch",
+    githubHeadRef,
+    "--workflow-run-id",
+    githubWorkflowRunId,
     "--prompt",
     prompt,
   ])
-  const exploration = parseJson(explorationResult.stdout, "start-exploration")
+  const exploration = parseJson(explorationResult.stdout, "ci")
   if (typeof exploration.id !== "string" || exploration.id.length === 0) {
-    throw new Error("Replay QA start-exploration did not return an exploration id.")
+    throw new Error("Replay QA ci did not return an exploration id.")
   }
+  if (terminationRequested) throw new Error("Replay QA CI run was terminated while it was starting.")
   console.log("Replay QA exploration/test run request accepted:")
   console.log(explorationResult.stdout.trim())
 
@@ -92,12 +123,12 @@ try {
 }
 
 async function waitForExploration(explorationId) {
-  const activeStatuses = new Set(["pending", "queued", "starting", "running", "in-progress"])
   const deadline = Date.now() + explorationTimeoutMs
   let lastStatus
   let lastHeartbeatAt = 0
 
   while (true) {
+    if (terminationRequested) throw new Error("Replay QA CI run was terminated while waiting for exploration completion.")
     const result = await runCli(["exploration", explorationId])
     const exploration = parseJson(result.stdout, "exploration")
     const status = typeof exploration.status === "string" ? exploration.status : "unknown"
@@ -109,7 +140,7 @@ async function waitForExploration(explorationId) {
       lastHeartbeatAt = now
     }
 
-    if (!activeStatuses.has(status)) {
+    if (!activeExplorationStatuses.has(status)) {
       if (status !== "completed") {
         throw new Error(`Replay QA exploration ${explorationId} ended with status: ${status}.`)
       }
@@ -124,6 +155,41 @@ async function waitForExploration(explorationId) {
 
     await delay(15_000)
   }
+}
+
+async function cleanUpActiveCiRun() {
+  if (signalCleanupPromise) return signalCleanupPromise
+
+  signalCleanupPromise = (async () => {
+    try {
+      await runCli([
+        "ci-cancel",
+        "--project",
+        projectId,
+        "--repository",
+        githubRepository,
+        "--pr-number",
+        githubPrNumber,
+        "--head-sha",
+        githubHeadSha,
+        "--branch",
+        githubHeadRef,
+        "--workflow-run-id",
+        githubWorkflowRunId,
+      ])
+      console.error(`Cancelled Replay QA CI run for ${githubRepository}#${githubPrNumber} after workflow termination.`)
+    } catch (error) {
+      console.error(
+        `Could not cancel Replay QA CI run for ${githubRepository}#${githubPrNumber} after workflow termination: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      )
+    }
+
+    await stopProcess(proxy)
+  })()
+
+  return signalCleanupPromise
 }
 
 async function waitForProxyReady() {
@@ -165,7 +231,7 @@ function handleProxyOutput(stream, chunk) {
 function runCli(args) {
   return new Promise((resolve, reject) => {
     const child = spawn("npx", ["--yes", `replayqa@${cliVersion}`, ...args], {
-      env: process.env,
+      env: cliEnv,
       stdio: ["ignore", "pipe", "pipe"],
     })
     const stdout = []
