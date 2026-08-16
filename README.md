@@ -37,12 +37,14 @@ REPLAY_QA_API_KEY=lqa_... npx --yes replayqa@0.2.2 create-project \
 Add these repository secrets in GitHub under **Settings → Secrets and variables → Actions**:
 
 - `REPLAY_QA_PROJECT_ID` — the `proj-...` id returned by the command above.
-- `REPLAY_QA_API_KEY` — an API key that can access that project.
+- `REPLAY_QA_API_KEY` — a durable Replay QA API key that can access that project. The local
+  `~/.replay/profile/auth.json` file contains a short-lived OAuth `accessToken`; do not use that
+  value as a long-lived CI secret. Create a dedicated API key for Actions and rotate it when needed.
 
 The PR workflow runs for opened, reopened, and updated pull requests, and can also be started with
 **Run workflow**. Forked pull requests are skipped because GitHub does not expose repository secrets
-to untrusted fork workflows. It uses `REPLAY_QA_URL=https://qa.replay.io` by default; set that
-environment variable in the workflow if the project lives on another Replay QA deployment.
+to untrusted fork workflows. Before starting the app, it validates both secret presence and access to the
+configured Replay project, so missing or stale credentials fail with a focused error.
 
 The checked-in `.replay/config.example.json` documents the local project shape without committing a
 project id. For a manual local proxy, copy it to `.replay/config.json` and run:

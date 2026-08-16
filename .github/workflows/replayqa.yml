@@ -43,6 +43,21 @@ jobs:
       - name: Install Replay QA CLI
         run: npx --yes replayqa@${REPLAYQA_CLI_VERSION} --version
 
+      - name: Validate Replay QA configuration
+        run: |
+          test -n "$REPLAY_QA_PROJECT_ID" || {
+            echo "::error::REPLAY_QA_PROJECT_ID is not configured in Actions secrets."
+            exit 1
+          }
+          test -n "$REPLAY_QA_API_KEY" || {
+            echo "::error::REPLAY_QA_API_KEY is not configured in Actions secrets."
+            exit 1
+          }
+          npx --yes replayqa@${REPLAYQA_CLI_VERSION} project \
+            --ignore-config \
+            --project "$REPLAY_QA_PROJECT_ID" >/dev/null
+          echo "Replay QA credentials are valid for $REPLAY_QA_PROJECT_ID"
+
       - name: Check and build the demo app
         run: npm run check
 
