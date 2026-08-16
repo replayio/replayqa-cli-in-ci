@@ -10,11 +10,11 @@ const githubHeadSha = required("REPLAYQA_GITHUB_HEAD_SHA")
 const githubHeadRef = required("REPLAYQA_GITHUB_HEAD_REF")
 const githubWorkflowRunId = required("REPLAYQA_GITHUB_RUN_ID")
 
-const cliVersion = process.env.REPLAYQA_CLI_VERSION ?? "0.2.2"
+const cliVersion = process.env.REPLAYQA_CLI_VERSION ?? "0.2.3"
 const qaUrl = process.env.REPLAY_QA_URL ?? "https://qa.replay.io"
 const cliEnv = { ...process.env, REPLAY_QA_URL: qaUrl }
 const proxyPort = process.env.REPLAYQA_PROXY_PORT ?? "18888"
-const explorationTimeoutMs = Number(process.env.REPLAYQA_EXPLORATION_TIMEOUT_MS ?? 900_000)
+const runTimeoutMs = Number(process.env.REPLAYQA_RUN_TIMEOUT_MS ?? 3_600_000)
 const runMarker = process.env.REPLAYQA_RUN_MARKER?.trim()
 const basePrompt =
   process.env.REPLAYQA_PROMPT ??
@@ -22,7 +22,6 @@ const basePrompt =
 const prompt = runMarker ? `${basePrompt}\n\nReplay QA CI marker: ${runMarker}` : basePrompt
 const proxyTimeoutMs = Number(process.env.REPLAYQA_PROXY_TIMEOUT_MS ?? 300_000)
 const proxyLogPath = process.env.REPLAYQA_PROXY_LOG ?? "/tmp/replayqa-proxy.jsonl"
-const activeExplorationStatuses = new Set(["pending", "queued", "starting", "running", "in-progress"])
 
 const proxyLog = createWriteStream(proxyLogPath, { flags: "a" })
 const proxyOutput = []
@@ -101,11 +100,14 @@ try {
   if (typeof exploration.id !== "string" || exploration.id.length === 0) {
     throw new Error("Replay QA ci did not return an exploration id.")
   }
+  if (typeof exploration.pr_run_id !== "string" || exploration.pr_run_id.length === 0) {
+    throw new Error("Replay QA ci did not return a PR run id.")
+  }
   if (terminationRequested) throw new Error("Replay QA CI run was terminated while it was starting.")
   console.log("Replay QA exploration/test run request accepted:")
   console.log(explorationResult.stdout.trim())
 
-  await waitForExploration(exploration.id)
+  await waitForCiRun(exploration.pr_run_id)
 
   const latestRuns = await runCli(["test-runs", "--project", projectId, "--page-size", "5"])
   console.log("Latest Replay QA test runs:")
@@ -122,38 +124,54 @@ try {
   await new Promise((resolve) => proxyLog.end(resolve))
 }
 
-async function waitForExploration(explorationId) {
-  const deadline = Date.now() + explorationTimeoutMs
+async function waitForCiRun(prRunId) {
+  const deadline = Date.now() + runTimeoutMs
   let lastStatus
   let lastHeartbeatAt = 0
 
   while (true) {
-    if (terminationRequested) throw new Error("Replay QA CI run was terminated while waiting for exploration completion.")
-    const result = await runCli(["exploration", explorationId])
-    const exploration = parseJson(result.stdout, "exploration")
-    const status = typeof exploration.status === "string" ? exploration.status : "unknown"
+    if (terminationRequested) throw new Error("Replay QA CI run was terminated while waiting for QA completion.")
+    const result = await runCli([
+      "api",
+      "POST",
+      `/projects/${projectId}/ci-runs/status`,
+      "--data",
+      JSON.stringify(ciRunMetadata()),
+    ])
+    const ciRun = parseJson(result.stdout, "ci run status")
+    const status = typeof ciRun.status === "string" ? ciRun.status : "unknown"
     const now = Date.now()
 
     if (status !== lastStatus || now - lastHeartbeatAt >= 60_000) {
-      console.log(`Replay QA exploration ${explorationId} status: ${status}; tunnel remains active.`)
+      console.log(`Replay QA CI run ${prRunId} status: ${status}; tunnel remains active.`)
       lastStatus = status
       lastHeartbeatAt = now
     }
 
-    if (!activeExplorationStatuses.has(status)) {
+    if (ciRun.terminal === true) {
       if (status !== "completed") {
-        throw new Error(`Replay QA exploration ${explorationId} ended with status: ${status}.`)
+        throw new Error(`Replay QA CI run ${prRunId} ended with status: ${status}.`)
       }
-      return exploration
+      return ciRun
     }
 
     if (Date.now() >= deadline) {
       throw new Error(
-        `Timed out after ${explorationTimeoutMs}ms waiting for Replay QA exploration ${explorationId} to finish.`
+        `Timed out after ${runTimeoutMs}ms waiting for Replay QA CI run ${prRunId} to finish.`
       )
     }
 
     await delay(15_000)
+  }
+}
+
+function ciRunMetadata() {
+  return {
+    repository: githubRepository,
+    pr_number: githubPrNumber,
+    head_sha: githubHeadSha,
+    branch: githubHeadRef,
+    workflow_run_id: githubWorkflowRunId,
   }
 }
 
