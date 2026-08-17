@@ -175,6 +175,14 @@ const initialReminders: Reminder[] = [
   },
 ]
 
+const subtaskLabels: Record<string, string[]> = {
+  "reminder-budget": [
+    "Review recurring subscriptions",
+    "Compare planned and actual spending",
+    "Set next month’s savings target",
+  ],
+}
+
 const listIconMap: Record<ListIcon, LucideIcon> = {
   inbox: Inbox,
   users: Users,
@@ -262,11 +270,12 @@ function isSmartList(id: ViewId): id is SmartListId {
 }
 
 function matchesView(reminder: Reminder, viewId: ViewId) {
+  if (viewId === "completed") return reminder.completed
+  if (reminder.completed) return false
   if (viewId === "today") return reminder.dueDate === "Today"
   if (viewId === "scheduled") return reminder.dueDate !== "No Date"
   if (viewId === "all") return true
   if (viewId === "flagged") return reminder.flagged
-  if (viewId === "completed") return reminder.completed
   return reminder.listId === viewId
 }
 
@@ -298,6 +307,9 @@ function createListId(name: string) {
 export function RemindersApp() {
   const [selectedView, setSelectedView] = React.useState<ViewId>("today")
   const [query, setQuery] = React.useState("")
+  const [expandedReminderIds, setExpandedReminderIds] = React.useState<
+    Set<string>
+  >(() => new Set())
   const [isSidebarOpen, setIsSidebarOpen] = React.useState(false)
   const [isNewReminderOpen, setIsNewReminderOpen] = React.useState(false)
   const [isNewListOpen, setIsNewListOpen] = React.useState(false)
@@ -305,6 +317,7 @@ export function RemindersApp() {
   const [newNotes, setNewNotes] = React.useState("")
   const [newListId, setNewListId] = React.useState("personal")
   const [newListName, setNewListName] = React.useState("")
+  const searchInputRef = React.useRef<HTMLInputElement>(null)
   const storedStateRaw = useStoredStateSnapshot()
   const storedState = React.useMemo(
     () => parseStoredState(storedStateRaw),
@@ -322,6 +335,22 @@ export function RemindersApp() {
     if (!localState) return
     window.localStorage.setItem(storageKey, JSON.stringify(localState))
   }, [localState])
+
+  React.useEffect(() => {
+    function focusSearch(event: KeyboardEvent) {
+      if (
+        !(event.metaKey || event.ctrlKey) ||
+        event.key.toLowerCase() !== "k"
+      ) {
+        return
+      }
+      event.preventDefault()
+      searchInputRef.current?.focus()
+    }
+
+    window.addEventListener("keydown", focusSearch)
+    return () => window.removeEventListener("keydown", focusSearch)
+  }, [])
 
   const selectedList = lists.find((list) => list.id === selectedView)
   const viewTitle = isSmartList(selectedView)
@@ -372,6 +401,15 @@ export function RemindersApp() {
           : reminder
       ),
     }))
+  }
+
+  function toggleSubtasks(id: string) {
+    setExpandedReminderIds((current) => {
+      const next = new Set(current)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
   }
 
   function addReminder(event?: React.FormEvent<HTMLFormElement>) {
@@ -425,12 +463,12 @@ export function RemindersApp() {
   return (
     <div className="min-h-screen bg-[#eef0f4] p-3 text-[#1c1c1e] sm:p-6">
       <div
-        className="mx-auto flex min-h-[calc(100vh-1.5rem)] max-w-[1440px] overflow-hidden rounded-[28px] border border-white/70 bg-white shadow-[0_24px_80px_rgba(30,38,55,0.14)] sm:min-h-[calc(100vh-3rem)]"
+        className="mx-auto flex h-[calc(100vh-1.5rem)] min-h-0 max-w-[1440px] overflow-hidden rounded-[28px] border border-white/70 bg-white shadow-[0_24px_80px_rgba(30,38,55,0.14)] sm:h-[calc(100vh-3rem)]"
         data-testid="reminders-app"
       >
         <aside
           className={cn(
-            "absolute inset-y-3 left-3 z-30 flex w-[286px] flex-col rounded-[24px] border border-black/[0.04] bg-[#f5f5f8]/95 p-4 shadow-xl backdrop-blur-xl transition-transform sm:inset-y-6 sm:left-6 lg:relative lg:inset-0 lg:z-0 lg:translate-x-0 lg:rounded-none lg:border-0 lg:border-r lg:bg-[#f7f7f9] lg:p-5 lg:shadow-none",
+            "absolute inset-y-3 left-3 z-30 flex min-h-0 w-[286px] flex-col rounded-[24px] border border-black/[0.04] bg-[#f5f5f8]/95 p-4 shadow-xl backdrop-blur-xl transition-transform sm:inset-y-6 sm:left-6 lg:relative lg:inset-0 lg:z-0 lg:translate-x-0 lg:rounded-none lg:border-0 lg:border-r lg:bg-[#f7f7f9] lg:p-5 lg:shadow-none",
             isSidebarOpen
               ? "translate-x-0"
               : "-translate-x-[calc(100%+1rem)] lg:translate-x-0"
@@ -599,8 +637,8 @@ export function RemindersApp() {
           />
         )}
 
-        <main className="flex min-w-0 flex-1 flex-col bg-white">
-          <header className="flex items-center justify-between gap-4 border-b border-[#ededf0] px-5 py-4 sm:px-8 sm:py-5">
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-white">
+          <header className="flex shrink-0 items-center justify-between gap-4 border-b border-[#ededf0] px-5 py-4 sm:px-8 sm:py-5">
             <Button
               variant="ghost"
               size="icon"
@@ -616,6 +654,7 @@ export function RemindersApp() {
                 aria-hidden="true"
               />
               <Input
+                ref={searchInputRef}
                 type="search"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
@@ -635,7 +674,7 @@ export function RemindersApp() {
             </Button>
           </header>
 
-          <div className="flex-1 overflow-y-auto">
+          <div className="min-h-0 flex-1 overflow-y-auto">
             <div className="mx-auto w-full max-w-4xl px-5 py-9 sm:px-10 sm:py-12">
               <div className="mb-9 flex items-start justify-between gap-6">
                 <div className="min-w-0">
@@ -676,14 +715,37 @@ export function RemindersApp() {
                           const list = lists.find(
                             (candidate) => candidate.id === reminder.listId
                           )
+                          const isSubtasksExpanded = expandedReminderIds.has(
+                            reminder.id
+                          )
+                          const reminderSubtasks = reminder.subtasks
+                            ? (subtaskLabels[reminder.id] ??
+                              Array.from(
+                                { length: reminder.subtasks },
+                                (_, subtaskIndex) =>
+                                  `Subtask ${subtaskIndex + 1}`
+                              ))
+                            : []
                           return (
                             <div
                               key={reminder.id}
                               className={cn(
                                 "group flex items-start gap-3 px-4 py-4 transition-colors hover:bg-[#fbfbfc] sm:px-5",
+                                reminder.subtasks && "cursor-pointer",
                                 index !== groupReminders.length - 1 &&
                                   "border-b border-[#f0f0f2]"
                               )}
+                              onClick={(event) => {
+                                if (!reminder.subtasks) return
+                                const target = event.target
+                                if (
+                                  target instanceof Element &&
+                                  target.closest("button, input, label")
+                                ) {
+                                  return
+                                }
+                                toggleSubtasks(reminder.id)
+                              }}
                               data-testid={`reminder-${reminder.id}`}
                             >
                               <Checkbox
@@ -743,13 +805,22 @@ export function RemindersApp() {
                                     </span>
                                   )}
                                   {reminder.subtasks && (
-                                    <span className="inline-flex items-center gap-1">
+                                    <Button
+                                      variant="ghost"
+                                      size="xs"
+                                      className="-mx-2 h-6 gap-1 px-2 text-[11px] font-normal text-[#666872]"
+                                      aria-expanded={isSubtasksExpanded}
+                                      aria-controls={`subtasks-${reminder.id}`}
+                                      onPress={() =>
+                                        toggleSubtasks(reminder.id)
+                                      }
+                                    >
                                       <ListChecks
                                         className="size-3"
                                         aria-hidden="true"
                                       />
                                       {reminder.subtasks} subtasks
-                                    </span>
+                                    </Button>
                                   )}
                                   {reminder.priority === "high" && (
                                     <span className="inline-flex items-center gap-1 font-medium text-red-500">
@@ -761,12 +832,31 @@ export function RemindersApp() {
                                     </span>
                                   )}
                                 </div>
+                                {isSubtasksExpanded && (
+                                  <ul
+                                    id={`subtasks-${reminder.id}`}
+                                    className="mt-3 space-y-2 border-l border-[#dfe0e5] pl-4 text-[12px] text-[#666872]"
+                                  >
+                                    {reminderSubtasks.map((subtask) => (
+                                      <li
+                                        key={subtask}
+                                        className="flex items-center gap-2"
+                                      >
+                                        <Circle
+                                          className="size-2.5 text-[#a0a1a8]"
+                                          aria-hidden="true"
+                                        />
+                                        {subtask}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                )}
                               </div>
                               <Button
                                 variant="ghost"
                                 size="icon-sm"
                                 className={cn(
-                                  "-mt-1 text-[#c0c1c7] opacity-100 transition-opacity hover:bg-[#f1f1f4] hover:text-[#5f626b] sm:opacity-0 sm:group-hover:opacity-100",
+                                  "-mt-1 text-[#8b8d96] transition-colors hover:bg-[#f1f1f4] hover:text-[#5f626b]",
                                   reminder.flagged &&
                                     "text-yellow-500 opacity-100"
                                 )}
@@ -880,7 +970,7 @@ export function RemindersApp() {
             </div>
           </div>
 
-          <footer className="flex items-center justify-between border-t border-[#f0f0f2] px-5 py-3 text-[11px] text-[#a2a3aa] sm:px-8">
+          <footer className="flex shrink-0 items-center justify-between border-t border-[#f0f0f2] px-5 py-3 text-[11px] text-[#7b7d86] sm:px-8">
             <span className="inline-flex items-center gap-1.5">
               <Sparkles className="size-3" aria-hidden="true" /> Organized for
               your day
