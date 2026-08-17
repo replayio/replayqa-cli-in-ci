@@ -22,6 +22,7 @@ const basePrompt =
 const prompt = runMarker ? `${basePrompt}\n\nReplay QA CI marker: ${runMarker}` : basePrompt
 const proxyTimeoutMs = Number(process.env.REPLAYQA_PROXY_TIMEOUT_MS ?? 300_000)
 const proxyLogPath = process.env.REPLAYQA_PROXY_LOG ?? "/tmp/replayqa-proxy.jsonl"
+const canSignalProcessGroup = process.platform !== "win32"
 
 const proxyLog = createWriteStream(proxyLogPath, { flags: "a" })
 const proxyOutput = []
@@ -54,6 +55,7 @@ const proxy = spawn(
   ],
   {
     env: cliEnv,
+    detached: canSignalProcessGroup,
     stdio: ["ignore", "pipe", "pipe"],
   }
 )
@@ -285,13 +287,31 @@ function parseJson(stdout, command) {
 }
 
 async function stopProcess(child) {
-  if (child.exitCode !== null || child.signalCode !== null) return
-  child.kill("SIGTERM")
-  await Promise.race([
-    new Promise((resolve) => child.once("exit", resolve)),
-    delay(5_000),
-  ])
-  if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL")
+  if (child.exitCode === null && child.signalCode === null) {
+    signalProcessTree(child, "SIGTERM")
+    await Promise.race([
+      new Promise((resolve) => child.once("exit", resolve)),
+      delay(5_000),
+    ])
+  }
+  if (child.exitCode === null && child.signalCode === null) {
+    signalProcessTree(child, "SIGKILL")
+  }
+  child.stdout?.destroy()
+  child.stderr?.destroy()
+  child.unref()
+}
+
+function signalProcessTree(child, signal) {
+  if (canSignalProcessGroup && child.pid) {
+    try {
+      process.kill(-child.pid, signal)
+      return
+    } catch {
+      // Fall back to the direct child if its process group already exited.
+    }
+  }
+  child.kill(signal)
 }
 
 function required(name) {
