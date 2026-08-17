@@ -2,8 +2,7 @@ name: Replay QA · PR
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
-  workflow_dispatch:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
 
 permissions:
   contents: read
@@ -16,14 +15,25 @@ jobs:
   replayqa:
     # GitHub does not expose repository secrets to forked pull requests. Keep this
     # job restricted to same-repository PRs instead of running a secret-backed job
-    # against untrusted fork code.
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository }}
+    # against untrusted fork code. Draft PRs intentionally skip QA until they are
+    # marked ready_for_review.
+    if: >-
+      ${{ github.event.pull_request.draft == false
+          && github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 75
     env:
       NEXT_TELEMETRY_DISABLED: "1"
-      REPLAYQA_CLI_VERSION: "0.2.2"
+      REPLAYQA_CLI_VERSION: "0.2.4"
       REPLAYQA_PROXY_TIMEOUT_MS: "300000"
+      REPLAYQA_PROXY_PORT: "18888"
+      REPLAYQA_RUN_TIMEOUT_MS: "3600000"
+      REPLAYQA_RUN_MARKER: pr-${{ github.event.pull_request.number }}
+      REPLAYQA_GITHUB_REPOSITORY: ${{ github.repository }}
+      REPLAYQA_GITHUB_PR_NUMBER: ${{ github.event.pull_request.number }}
+      REPLAYQA_GITHUB_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      REPLAYQA_GITHUB_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      REPLAYQA_GITHUB_RUN_ID: ${{ github.run_id }}
       REPLAY_QA_PROJECT_ID: ${{ secrets.REPLAY_QA_PROJECT_ID }}
       REPLAY_QA_API_KEY: ${{ secrets.REPLAY_QA_API_KEY }}
 
@@ -42,6 +52,21 @@ jobs:
 
       - name: Install Replay QA CLI
         run: npx --yes replayqa@${REPLAYQA_CLI_VERSION} --version
+
+      - name: Validate Replay QA configuration
+        run: |
+          test -n "$REPLAY_QA_PROJECT_ID" || {
+            echo "::error::REPLAY_QA_PROJECT_ID is not configured in Actions secrets."
+            exit 1
+          }
+          test -n "$REPLAY_QA_API_KEY" || {
+            echo "::error::REPLAY_QA_API_KEY is not configured in Actions secrets."
+            exit 1
+          }
+          npx --yes replayqa@${REPLAYQA_CLI_VERSION} project \
+            --ignore-config \
+            --project "$REPLAY_QA_PROJECT_ID" >/dev/null
+          echo "Replay QA credentials are valid for $REPLAY_QA_PROJECT_ID"
 
       - name: Check and build the demo app
         run: npm run check
