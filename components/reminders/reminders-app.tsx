@@ -311,6 +311,9 @@ export function RemindersApp() {
   const [expandedReminderIds, setExpandedReminderIds] = React.useState<
     Set<string>
   >(() => new Set())
+  const [completedSubtaskIds, setCompletedSubtaskIds] = React.useState<
+    Set<string>
+  >(() => new Set())
   const [isSidebarOpen, setIsSidebarOpen] = React.useState(false)
   const [isNewReminderOpen, setIsNewReminderOpen] = React.useState(false)
   const [isNewListOpen, setIsNewListOpen] = React.useState(false)
@@ -437,6 +440,15 @@ export function RemindersApp() {
       const next = new Set(current)
       if (next.has(id)) next.delete(id)
       else next.add(id)
+      return next
+    })
+  }
+
+  function toggleSubtask(id: string, completed: boolean) {
+    setCompletedSubtaskIds((current) => {
+      const next = new Set(current)
+      if (completed) next.add(id)
+      else next.delete(id)
       return next
     })
   }
@@ -809,6 +821,12 @@ export function RemindersApp() {
                                   `Subtask ${subtaskIndex + 1}`
                               ))
                             : []
+                          const remainingSubtasks = reminderSubtasks.filter(
+                            (_, subtaskIndex) =>
+                              !completedSubtaskIds.has(
+                                `${reminder.id}-${subtaskIndex}`
+                              )
+                          ).length
                           return (
                             <div
                               key={reminder.id}
@@ -902,7 +920,7 @@ export function RemindersApp() {
                                         className="size-3"
                                         aria-hidden="true"
                                       />
-                                      {reminder.subtasks} subtasks
+                                      {remainingSubtasks} subtasks
                                     </Button>
                                   )}
                                   {reminder.priority === "high" && (
@@ -920,18 +938,39 @@ export function RemindersApp() {
                                     id={`subtasks-${reminder.id}`}
                                     className="mt-3 space-y-2 border-l border-[#dfe0e5] pl-4 text-[12px] text-[#666872]"
                                   >
-                                    {reminderSubtasks.map((subtask) => (
-                                      <li
-                                        key={subtask}
-                                        className="flex items-center gap-2"
-                                      >
-                                        <Circle
-                                          className="size-2.5 text-[#a0a1a8]"
-                                          aria-hidden="true"
-                                        />
-                                        {subtask}
-                                      </li>
-                                    ))}
+                                    {reminderSubtasks.map(
+                                      (subtask, subtaskIndex) => {
+                                        const subtaskId = `${reminder.id}-${subtaskIndex}`
+                                        const isCompleted =
+                                          completedSubtaskIds.has(subtaskId)
+                                        return (
+                                          <li
+                                            key={subtask}
+                                            className="flex items-center gap-2"
+                                          >
+                                            <Checkbox
+                                              isSelected={isCompleted}
+                                              onChange={(isSelected) =>
+                                                toggleSubtask(
+                                                  subtaskId,
+                                                  isSelected
+                                                )
+                                              }
+                                              aria-label={`${isCompleted ? "Mark" : "Complete"} subtask: ${subtask}`}
+                                              className="size-4 rounded-full"
+                                            />
+                                            <span
+                                              className={cn(
+                                                isCompleted &&
+                                                  "text-[#686a73] line-through"
+                                              )}
+                                            >
+                                              {subtask}
+                                            </span>
+                                          </li>
+                                        )
+                                      }
+                                    )}
                                   </ul>
                                 )}
                               </div>
@@ -971,7 +1010,7 @@ export function RemindersApp() {
                   <h2 className="text-[15px] font-semibold text-[#4a4b53]">
                     Nothing here yet
                   </h2>
-                  <p className="mx-auto mt-2 max-w-xs text-[13px] leading-5 text-[#9a9ba3]">
+                  <p className="mx-auto mt-2 max-w-xs text-[13px] leading-5 text-[#60626b]">
                     {query
                       ? "Try a different search or clear the filter."
                       : "A quiet list is a good place to start."}
