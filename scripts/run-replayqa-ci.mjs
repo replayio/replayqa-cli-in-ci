@@ -21,7 +21,9 @@ const basePrompt =
   "Exercise the Reminders app: create a reminder, mark it complete, search for a reminder, switch lists, and verify the main navigation and empty states."
 const prompt = runMarker ? `${basePrompt}\n\nReplay QA CI marker: ${runMarker}` : basePrompt
 const proxyTimeoutMs = Number(process.env.REPLAYQA_PROXY_TIMEOUT_MS ?? 300_000)
+const maxStatusPollFailures = Number(process.env.REPLAYQA_STATUS_MAX_FAILURES ?? 5)
 const proxyLogPath = process.env.REPLAYQA_PROXY_LOG ?? "/tmp/replayqa-proxy.jsonl"
+const canSignalProcessGroup = process.platform !== "win32"
 
 const proxyLog = createWriteStream(proxyLogPath, { flags: "a" })
 const proxyOutput = []
@@ -54,6 +56,7 @@ const proxy = spawn(
   ],
   {
     env: cliEnv,
+    detached: canSignalProcessGroup,
     stdio: ["ignore", "pipe", "pipe"],
   }
 )
@@ -129,16 +132,35 @@ async function waitForCiRun(prRunId) {
   const deadline = Date.now() + runTimeoutMs
   let lastStatus
   let lastHeartbeatAt = 0
+  let consecutiveStatusFailures = 0
 
   while (true) {
     if (terminationRequested) throw new Error("Replay QA CI run was terminated while waiting for QA completion.")
-    const result = await runCli([
-      "api",
-      "POST",
-      `/projects/${projectId}/ci-runs/status`,
-      "--data",
-      JSON.stringify(ciRunMetadata()),
-    ])
+    let result
+    try {
+      result = await runCli([
+        "api",
+        "POST",
+        `/projects/${projectId}/ci-runs/status`,
+        "--data",
+        JSON.stringify(ciRunMetadata()),
+      ])
+      consecutiveStatusFailures = 0
+    } catch (error) {
+      consecutiveStatusFailures += 1
+      if (Date.now() >= deadline || consecutiveStatusFailures >= maxStatusPollFailures) {
+        throw error
+      }
+
+      const retryDelayMs = Math.min(5_000 * 2 ** (consecutiveStatusFailures - 1), 30_000)
+      console.warn(
+        `Replay QA status poll failed; retrying in ${retryDelayMs}ms (${consecutiveStatusFailures}/${maxStatusPollFailures}). ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      )
+      await delay(retryDelayMs)
+      continue
+    }
     const ciRun = parseJson(result.stdout, "ci run status")
     const status = typeof ciRun.status === "string" ? ciRun.status : "unknown"
     const now = Date.now()
@@ -285,13 +307,31 @@ function parseJson(stdout, command) {
 }
 
 async function stopProcess(child) {
-  if (child.exitCode !== null || child.signalCode !== null) return
-  child.kill("SIGTERM")
-  await Promise.race([
-    new Promise((resolve) => child.once("exit", resolve)),
-    delay(5_000),
-  ])
-  if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL")
+  if (child.exitCode === null && child.signalCode === null) {
+    signalProcessTree(child, "SIGTERM")
+    await Promise.race([
+      new Promise((resolve) => child.once("exit", resolve)),
+      delay(5_000),
+    ])
+  }
+  if (child.exitCode === null && child.signalCode === null) {
+    signalProcessTree(child, "SIGKILL")
+  }
+  child.stdout?.destroy()
+  child.stderr?.destroy()
+  child.unref()
+}
+
+function signalProcessTree(child, signal) {
+  if (canSignalProcessGroup && child.pid) {
+    try {
+      process.kill(-child.pid, signal)
+      return
+    } catch {
+      // Fall back to the direct child if its process group already exited.
+    }
+  }
+  child.kill(signal)
 }
 
 function required(name) {
